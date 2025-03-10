@@ -1,34 +1,60 @@
-import { MongoClient } from "mongodb"
+// lib/mongodb.ts
+import { MongoClient, MongoClientOptions } from "mongodb";
 
-if (!process.env.MONGODB_URI) {
-  throw new Error('Invalid/Missing environment variable: "MONGODB_URI"')
+// TypeScript interface for MongoDB connection options
+interface CustomMongoClientOptions extends MongoClientOptions {
+  tlsInsecure?: boolean;
 }
 
-const uri = process.env.MONGODB_URI
-const options = {}
+const uri = process.env.MONGODB_URI;
 
-let client
-let clientPromise: Promise<MongoClient>
+if (!uri) {
+  throw new Error("Please add your MongoDB URI to the .env file");
+}
+
+const options: CustomMongoClientOptions = {
+  tls: true,
+  tlsInsecure: false, // Enforce secure connections in production
+  maxPoolSize: 10, // Limit connection pool size
+  minPoolSize: 2, // Maintain minimum connections
+  maxIdleTimeMS: 30000, // Close idle connections after 30 seconds
+  serverSelectionTimeoutMS: 5000, // Timeout after 5s if no server available
+  socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+  heartbeatFrequencyMS: 10000, // Send pings every 10 seconds
+};
+
+// Global variable for development connection caching
+declare global {
+  var _mongoClientPromise: Promise<MongoClient>;
+}
+
+let client: MongoClient;
+let clientPromise: Promise<MongoClient>;
 
 if (process.env.NODE_ENV === "development") {
-  // In development mode, use a global variable so that the value
-  // is preserved across module reloads caused by HMR (Hot Module Replacement).
-  const globalWithMongo = global as typeof globalThis & {
-    _mongoClientPromise?: Promise<MongoClient>
+  // Use global variable to preserve connection during HMR
+  if (!global._mongoClientPromise) {
+    client = new MongoClient(uri, options);
+    global._mongoClientPromise = client.connect();
+    console.log("Created new MongoDB client in development mode");
   }
-
-  if (!globalWithMongo._mongoClientPromise) {
-    client = new MongoClient(uri, options)
-    globalWithMongo._mongoClientPromise = client.connect()
-  }
-  clientPromise = globalWithMongo._mongoClientPromise
+  clientPromise = global._mongoClientPromise;
 } else {
-  // In production mode, it's best to not use a global variable.
-  client = new MongoClient(uri, options)
-  clientPromise = client.connect()
+  // Production connection
+  client = new MongoClient(uri, options);
+  clientPromise = client.connect();
+  console.log("Created new MongoDB client in production mode");
 }
 
-// Export a module-scoped MongoClient promise. By doing this in a
-// separate module, the client can be shared across functions.
-export default clientPromise
+// Add error handling for the connection
+clientPromise
+  .then((connectedClient) => {
+    console.log("Successfully connected to MongoDB");
+    return connectedClient.db("admin").command({ ping: 1 });
+  })
+  .catch((error) => {
+    console.error("Failed to connect to MongoDB:", error);
+    process.exit(1);
+  });
 
+export default clientPromise;
